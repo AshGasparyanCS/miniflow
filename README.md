@@ -1,18 +1,12 @@
-# miniflow — a mini-Airflow DAG scheduler
+# miniflow: a mini-Airflow DAG scheduler
 
-A job-scheduling system in the spirit of Airflow: define a DAG of tasks with
-dependencies, and miniflow runs them in dependency order, in parallel where it
-can, with per-task retries and failure handling. Run state is persisted to a
-database, and a live web UI shows every run and task as it progresses.
+A job-scheduling system in the spirit of Airflow. You define a DAG of tasks with dependencies, and miniflow runs them in dependency order, in parallel where it can, with per-task retries and failure handling. Run state is saved to a database, and a live web UI shows every run and task as it happens.
 
-Built with **FastAPI** + **SQLAlchemy** and a **custom worker pool** (no Celery,
-no external broker — the scheduling logic is the interesting part, so it's
-implemented directly). Persists to **PostgreSQL** in production; uses SQLite for
-local dev and tests with no code changes.
+Built with **FastAPI** and **SQLAlchemy** plus a **custom worker pool** (no Celery, no external broker, because the scheduling logic is the interesting part and I wanted to write it directly). It persists to **PostgreSQL** in production and uses SQLite for local dev and tests, with no code changes between the two.
 
 ## Why a custom worker pool
 
-The core design choice is a clean split between *deciding* and *doing*:
+The core idea is a clean split between *deciding* and *doing*:
 
 ```
             +-----------------------------------------------+
@@ -38,9 +32,7 @@ The core design choice is a clean split between *deciding* and *doing*:
                  +---------------------------+
 ```
 
-Because exactly one thread ever writes state, there are **no database races** —
-the scheduler is the brain, the pool is the muscle. This is also how real
-schedulers separate the scheduling loop from executors.
+Because exactly one thread ever writes state, there are **no database races**. The scheduler is the brain, the pool is the muscle. This is also roughly how real schedulers separate the scheduling loop from the executors.
 
 ### Task lifecycle
 
@@ -56,8 +48,7 @@ pending ──(all upstreams success)──> running ──exit 0──> success
 
 ## DAG definition format
 
-A DAG is JSON: a `dag_id` and a list of tasks. Each task has a shell `command`,
-optional `upstreams`, and optional `retries` / `retry_delay`.
+A DAG is just JSON: a `dag_id` and a list of tasks. Each task has a shell `command`, optional `upstreams`, and optional `retries` / `retry_delay`.
 
 ```json
 {
@@ -70,15 +61,13 @@ optional `upstreams`, and optional `retries` / `retry_delay`.
 }
 ```
 
-A task succeeds when its command exits 0. Before running, miniflow validates the
-DAG: unique task ids, all referenced upstreams exist, and the graph is acyclic
-(a cycle is rejected with a clear error).
+A task succeeds when its command exits 0. Before running anything, miniflow validates the DAG: task ids are unique, every referenced upstream exists, and the graph is acyclic (a cycle gets rejected with a clear error).
 
 ## API
 
-| Method & path | Purpose |
+| Method and path | Purpose |
 |---|---|
-| `POST /api/runs` | Submit a DAG definition; returns `{run_id}`. |
+| `POST /api/runs` | Submit a DAG definition, get back `{run_id}`. |
 | `GET /api/runs` | List recent runs with per-state task counts. |
 | `GET /api/runs/{id}` | One run with every task's state, attempt count, and logs. |
 | `GET /api/examples` | Built-in example DAGs. |
@@ -87,16 +76,14 @@ DAG: unique task ids, all referenced upstreams exist, and the graph is acyclic
 
 ## Run it
 
-### Local (SQLite, zero infra)
+### Local (SQLite, no infra needed)
 
 ```bash
 pip install -r requirements.txt
 python -m miniflow                       # http://localhost:8000
 ```
 
-Open the dashboard, click an example DAG (▶ `diamond_parallel`,
-`retry_then_pass`, `fail_cascade`, `linear_etl`) and watch tasks move through
-their states live. Or drive it from the API:
+Open the dashboard, click an example DAG (the buttons: `diamond_parallel`, `retry_then_pass`, `fail_cascade`, `linear_etl`) and watch the tasks move through their states live. Or drive it from the API:
 
 ```bash
 curl -X POST localhost:8000/api/runs -H 'content-type: application/json' -d '{
@@ -107,24 +94,22 @@ curl -X POST localhost:8000/api/runs -H 'content-type: application/json' -d '{
   ]}'
 ```
 
-### Docker (PostgreSQL, production-like)
+### Docker (PostgreSQL, closer to production)
 
 ```bash
 docker compose up --build           # Postgres + app, UI on :8000
 ```
 
-The app reads `DATABASE_URL`; compose points it at the Postgres service. Nothing
-else changes between SQLite and Postgres — that's the SQLAlchemy layer doing its
-job.
+The app reads `DATABASE_URL`, and compose points it at the Postgres service. Nothing else changes between SQLite and Postgres, which is the SQLAlchemy layer doing its job.
 
-## Examples (what each demonstrates)
+## Examples (and what each one shows off)
 
 | Example | Shows |
 |---|---|
-| `linear_etl` | Strict dependency ordering: extract → transform → load. |
-| `diamond_parallel` | Two independent branches run **concurrently**, then join. |
+| `linear_etl` | Strict dependency ordering: extract, then transform, then load. |
+| `diamond_parallel` | Two independent branches run **at the same time**, then join. |
 | `retry_then_pass` | A flaky task fails, retries with backoff, then succeeds. |
-| `fail_cascade` | A task exhausts retries and **fails**; its downstream is marked `upstream_failed`, while an independent branch still succeeds. |
+| `fail_cascade` | A task burns through its retries and **fails**, its downstream gets marked `upstream_failed`, and an independent branch still succeeds anyway. |
 
 ## Tests
 
@@ -135,10 +120,10 @@ pytest -q     # 15 tests
 | Area | Checks |
 |---|---|
 | `test_dag` | Topological order, cycle rejection, bad/duplicate/self deps, downstream closure. |
-| `test_executor` | Dependency ordering (downstream starts only after upstream finishes), parallel branches overlap, retry-then-success, failure cascade with attempt counts. |
-| `test_api` | Submit + poll to completion, example trigger, validation 400s, run listing. |
+| `test_executor` | Dependency ordering (a downstream task only starts after its upstream finishes), parallel branches actually overlap, retry-then-success, failure cascade with the right attempt counts. |
+| `test_api` | Submit and poll to completion, example trigger, validation 400s, run listing. |
 
-Tests run against a temp SQLite DB and exercise the real scheduler thread + worker pool.
+Tests run against a temp SQLite DB and exercise the real scheduler thread plus worker pool, not mocks.
 
 ## Project layout
 
@@ -155,16 +140,9 @@ tests/          dag / executor / api tests
 docker-compose.yml, Dockerfile, requirements.txt
 ```
 
-## Design notes & limitations
+## Design notes and limitations
 
-- **Custom worker pool** uses Python threads, which is the right model here
-  because tasks are subprocesses (the work happens in a separate process, so the
-  GIL isn't the bottleneck). Swapping in a process pool or remote executors would
-  only touch `executor.py`.
-- **Single scheduler thread** keeps state authoritative and race-free. To scale
-  schedulers horizontally you'd add row-level locking / `SELECT ... FOR UPDATE`
-  so multiple schedulers could claim tasks; the schema already supports it.
-- **Tasks are shell commands.** Adding typed operators (Python callables, HTTP
-  calls) is a matter of extending the task-execution function.
-- Scheduling is poll-based (a short tick); fine for this scale. No cron-style
-  recurring schedules yet — runs are triggered via the API/UI.
+- **The custom worker pool uses Python threads,** which is the right call here because tasks are subprocesses. The actual work happens in a separate process, so the GIL isn't the bottleneck. Swapping in a process pool or remote executors would only touch `executor.py`.
+- **One scheduler thread** keeps state authoritative and race-free. To scale schedulers horizontally you'd add row-level locking (`SELECT ... FOR UPDATE`) so multiple schedulers could claim tasks. The schema already supports it.
+- **Tasks are shell commands.** Adding typed operators (Python callables, HTTP calls) is just a matter of extending the task-execution function.
+- Scheduling is poll-based on a short tick, which is fine at this scale. No cron-style recurring schedules yet, runs are triggered through the API or UI.
