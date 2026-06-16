@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>miniflow</title>
+<style>
+  :root{--bg:#0e1116;--panel:#161b22;--panel2:#1b222b;--line:#232a33;--text:#e6edf3;
+        --dim:#8b949e;--ok:#4dd0a7;--run:#7aa2f7;--warn:#f0b252;--fail:#f0746b;
+        --mono:'IBM Plex Mono',ui-monospace,monospace;--sans:'IBM Plex Sans',system-ui,sans-serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px}
+  header{padding:16px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;letter-spacing:.5px;font-family:var(--mono)}
+  .grow{flex:1}
+  button{font-family:var(--mono);font-size:12px;background:var(--panel);color:var(--text);
+         border:1px solid var(--line);border-radius:7px;padding:7px 11px;cursor:pointer}
+  button:hover{border-color:var(--ok)}
+  .layout{display:grid;grid-template-columns:330px 1fr;height:calc(100vh - 57px)}
+  .runs{border-right:1px solid var(--line);overflow:auto}
+  .run{padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer}
+  .run:hover{background:var(--panel)}
+  .run.sel{background:var(--panel2)}
+  .run .id{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .run .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+  .run .name{font-weight:600}
+  .detail{overflow:auto;padding:22px}
+  .badge{font-family:var(--mono);font-size:11px;padding:2px 9px;border-radius:999px;border:1px solid;text-transform:uppercase;letter-spacing:.5px}
+  .s-success{color:var(--ok);border-color:rgba(77,208,167,.4);background:rgba(77,208,167,.08)}
+  .s-running{color:var(--run);border-color:rgba(122,162,247,.4);background:rgba(122,162,247,.08)}
+  .s-failed,.s-upstream_failed{color:var(--fail);border-color:rgba(240,116,107,.4);background:rgba(240,116,107,.08)}
+  .s-up_for_retry{color:var(--warn);border-color:rgba(240,178,82,.4);background:rgba(240,178,82,.08)}
+  .s-pending{color:var(--dim);border-color:var(--line);background:var(--panel)}
+  table{width:100%;border-collapse:collapse;margin-top:14px;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:top}
+  th{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:500}
+  tr:last-child td{border-bottom:none}
+  .tid{font-family:var(--mono)}
+  .deps{color:var(--dim);font-family:var(--mono);font-size:11px}
+  .log{font-family:var(--mono);font-size:11px;color:#c5ccd6;white-space:pre-wrap;
+       background:#0b0e13;border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin-top:5px;max-height:120px;overflow:auto}
+  .empty{color:var(--dim);padding:40px;text-align:center}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle}
+  .pulse{animation:pulse 1.4s infinite}
+  @keyframes pulse{0%{opacity:1}50%{opacity:.3}100%{opacity:1}}
+  .ex{display:flex;gap:8px;flex-wrap:wrap}
+</style></head>
+<body>
+<header>
+  <h1>● miniflow</h1>
+  <div class="ex" id="examples"></div>
+  <div class="grow"></div>
+  <span class="badge s-running" id="hb">live</span>
+</header>
+<div class="layout">
+  <div class="runs" id="runs"></div>
+  <div class="detail" id="detail"><div class="empty">Select a run, or trigger an example DAG above.</div></div>
+</div>
+<script>
+let selected = null;
+const stColor = s => "s-" + s;
+
+async function j(url, opts){ const r = await fetch(url, opts); return r.json(); }
+
+async function loadExamples(){
+  const d = await j("/api/examples");
+  document.getElementById("examples").innerHTML = d.examples
+    .map(e => `<button onclick="runExample('${e.name}')">▶ ${e.name}</button>`).join("");
+}
+async function runExample(name){
+  const {run_id} = await j("/api/examples/" + name, {method:"POST"});
+  selected = run_id; await refresh();
+}
+
+function runRow(r){
+  const finished = r.state !== "running";
+  const dot = r.state==="running" ? "<span class='dot pulse' style='background:var(--run)'></span>"
+            : r.state==="success" ? "<span class='dot' style='background:var(--ok)'></span>"
+            : "<span class='dot' style='background:var(--fail)'></span>";
+  return `<div class="run ${r.id===selected?'sel':''}" onclick="select('${r.id}')">
+    <div class="top"><span class="name">${dot}${r.dag_id}</span>
+      <span class="badge ${stColor(r.state)}">${r.state}</span></div>
+    <div class="id">${r.id.slice(0,12)} · ${r.n_tasks} tasks</div></div>`;
+}
+
+function select(id){ selected = id; renderDetail(); }
+
+async function renderDetail(){
+  if(!selected){ return; }
+  const r = await j("/api/runs/" + selected);
+  const ups = {}; (r.dag.tasks||[]).forEach(t => ups[t.task_id] = t.upstreams||[]);
+  const rows = r.tasks.map(t => `<tr>
+      <td class="tid">${t.task_id}<div class="deps">${(ups[t.task_id]||[]).length? "← "+ups[t.task_id].join(", "):"(root)"}</div></td>
+      <td><span class="badge ${stColor(t.state)}">${t.state.replace("_"," ")}</span></td>
+      <td class="tid">${t.try_number}/${t.max_retries+1}</td>
+      <td>${t.log? `<div class="log">${escapeHtml(t.log)}</div>`:"—"}</td>
+    </tr>`).join("");
+  document.getElementById("detail").innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px">
+      <h2 style="margin:0;font-family:var(--mono);font-size:16px">${r.dag_id}</h2>
+      <span class="badge ${stColor(r.state)}">${r.state}</span>
+      <span class="deps">${r.id}</span>
+    </div>
+    <table><thead><tr><th>task</th><th>state</th><th>attempt</th><th>output</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+}
+
+function escapeHtml(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function refresh(){
+  try{
+    const d = await j("/api/runs");
+    if(!selected && d.runs.length) selected = d.runs[0].id;
+    document.getElementById("runs").innerHTML = d.runs.map(runRow).join("") ||
+      "<div class='empty'>No runs yet.</div>";
+    await renderDetail();
+    document.getElementById("hb").textContent = "live";
+  }catch(e){ document.getElementById("hb").textContent = "offline"; }
+}
+loadExamples(); refresh(); setInterval(refresh, 1000);
+</script>
+</body></html>
