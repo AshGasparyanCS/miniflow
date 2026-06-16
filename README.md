@@ -1,5 +1,7 @@
 # miniflow: a mini-Airflow DAG scheduler
 
+![tests](https://github.com/AshGasparyanCS/miniflow/actions/workflows/tests.yml/badge.svg)
+
 A job-scheduling system in the spirit of Airflow. You define a DAG of tasks with dependencies, and miniflow runs them in dependency order, in parallel where it can, with per-task retries and failure handling. Run state is saved to a database, and a live web UI shows every run and task as it happens.
 
 Built with **FastAPI** and **SQLAlchemy** plus a **custom worker pool** (no Celery, no external broker, because the scheduling logic is the interesting part and I wanted to write it directly). It persists to **PostgreSQL** in production and uses SQLite for local dev and tests, with no code changes between the two.
